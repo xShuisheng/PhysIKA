@@ -11,6 +11,13 @@
 
 int main()
 {
+
+	DemoCar4* demo4 = DemoCar4::getInstance();
+	demo4->build(false);
+
+	return 0;
+
+
 	std::cout << "Input to choose a simulation scene: " << std::endl;
 	std::cout << "   0:  Normal 4 wheels car." << std::endl;
 	std::cout << "   1:  Tank car." << std::endl;
@@ -25,7 +32,7 @@ int main()
 	{
 		// Tank car.
 		DemoTankCar* demo1 = DemoTankCar::getInstance();
-		demo1->build(true);
+		demo1->build(false);
 		break;
 	}
 	default:

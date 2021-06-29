@@ -12,6 +12,7 @@
 #include "Dynamics/RigidBody/Vehicle/PBDCar.h"
 #include "Dynamics/RigidBody/PBDRigid/HeightFieldPBDInteractionNode.h"
 #include "Dynamics/RigidBody/Vehicle/MultiWheelCar.h"
+#include "Dynamics/RigidBody/PBDRigid/PBDSolverNode.h"
 
 using namespace PhysIKA;
 
@@ -78,6 +79,92 @@ private:
 	//std::shared_ptr<RigidBody2<DataType3f>> m_chassis;
 
 	//std::shared_ptr<RigidBody2<DataType3f>> m_wheels[4];
+
+	float m_totalTime = 0.0;
+};
+
+
+class DemoCar3 :public GLApp
+{
+private:
+	DemoCar3() {}
+	static DemoCar3* m_instance;
+public:
+	static DemoCar3* getInstance()
+	{
+		if (m_instance == 0)
+			m_instance = new DemoCar3;
+		return m_instance;
+	}
+
+	void build(bool useGPU = true);
+
+	void run() {}
+
+	virtual void advance(Real dt);
+
+	static void demoKeyboardFunction(unsigned char key, int x, int y);
+
+	void addCar(std::shared_ptr<PBDCar> car, Vector3f pos,
+		int chassisGroup = 1, int chassisMask = 1, int wheelGroup = 2, int wheelMask = 4);
+
+	void computeAABB(std::shared_ptr<PointSet<DataType3f>> points, Vector3f& center, Vector3f& halfSize);
+
+private:
+
+	std::shared_ptr<PBDCar> m_car;
+	std::shared_ptr<PBDCar> m_car2;
+
+	std::shared_ptr<HeightFieldPBDInteractionNode> m_groundRigidInteractor;
+
+
+	std::shared_ptr<RigidBodyRoot<DataType3f>> m_rigidSystem;
+
+	//std::shared_ptr<RigidBody2<DataType3f>> m_chassis;
+
+	//std::shared_ptr<RigidBody2<DataType3f>> m_wheels[4];
+
+	float m_totalTime = 0.0;
+};
+
+
+
+class DemoCar4 :public GLApp
+{
+private:
+	DemoCar4() {}
+	static DemoCar4* m_instance;
+public:
+	static DemoCar4* getInstance()
+	{
+		if (m_instance == 0)
+			m_instance = new DemoCar4;
+		return m_instance;
+	}
+
+	void build(bool useGPU = true);
+
+	void run() {}
+
+	virtual void advance(Real dt);
+
+	static void demoKeyboardFunction(unsigned char key, int x, int y);
+
+	void addCar(std::shared_ptr<PBDCar> car, Vector3f pos,
+		int chassisGroup = 1, int chassisMask = 1, int wheelGroup = 2, int wheelMask = 4);
+
+	void computeAABB(std::shared_ptr<PointSet<DataType3f>> points, Vector3f& center, Vector3f& halfSize);
+
+private:
+
+	std::shared_ptr<PBDCar> m_car;
+	std::shared_ptr<PBDCar> m_car2;
+
+	std::shared_ptr<PBDSolverNode> m_groundRigidInteractor;
+	//std::shared_ptr<HeightFieldPBDInteractionNode> m_groundRigidInteractor;
+
+	std::shared_ptr<RigidBodyRoot<DataType3f>> m_rigidSystem;
+
 
 	float m_totalTime = 0.0;
 };

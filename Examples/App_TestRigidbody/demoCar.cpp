@@ -10,6 +10,9 @@
 
 #include "Dynamics/HeightField/HeightFieldMesh.h"
 
+#include "Dynamics/RigidBody/PBDRigid/PBDSolverNode.h"
+#include "Dynamics/RigidBody/PBDRigid/MultiHeightFieldRigidDetectionModule.h"
+
 #include "Core/Typedef.h"
 
 #include "Core/Utility/Function1Pt.h"
@@ -500,6 +503,1044 @@ void DemoCar2::demoKeyboardFunction(unsigned char key, int x, int y)
 
 
 
+//=========================================================
+
+DemoCar3* DemoCar3::m_instance = 0;
+
+void DemoCar3::advance(Real dt)
+{
+	//m_totalTime += dt;
+	//float force[6] = { 0 };
+	//force[5] = cos(m_totalTime * 0.5);
+
+	//auto pjoint = m_chassis->getParentJoint();
+	//pjoint->setMotorForce(force);
+
+}
+
+void DemoCar3::build(bool useGPU)
+{
+	SceneGraph& scene = SceneGraph::getInstance();
+	std::shared_ptr<StaticBoundary<DataType3f>> root = scene.createNewScene<StaticBoundary<DataType3f>>();
+	root->loadSDF("../../Media/bar/bar.sdf", false);
+	root->translate(Vector3f(0.2f, 0.2f, 0));
+
+	//int ny = 509, nx = 266;
+	int ny = 737, nx = 737;
+
+	float hScale = 1.0;
+	float dlx = 0.0578359f;
+	float dly = 0.0746455f;
+	//float dl = 0.22 * hScale;
+	float hOffset = -25;
+
+	m_groundRigidInteractor = std::make_shared<HeightFieldPBDInteractionNode>();
+	//m_groundRigidInteractor->setRigidBodySystem(m_car->m_rigidSystem);
+	m_groundRigidInteractor->setSize(nx, ny, dlx, dlx);
+	m_groundRigidInteractor->getSolver()->m_numSubstep = 5;
+	m_groundRigidInteractor->getSolver()->m_numContactSolveIter = 20;
+
+	m_groundRigidInteractor->getSolver()->setUseGPU(useGPU);
+
+	root->addChild(m_groundRigidInteractor);
+	m_groundRigidInteractor->setDt(0.016);
+
+	HostHeightField1d height;
+	height.resize(nx, ny);
+	memset(height.GetDataPtr(), 0, sizeof(double) * nx * ny);
+
+	//HeightFieldLoader hfloader;
+	//hfloader.setRange(0, 0.5);
+	//hfloader.load(height, "../../Media/HeightFieldImg/terrain3.png");
+
+	std::string infilename("D:\\Documents\\XiaoDoc\\Journal\\y2021m06\\test_for_viwo_bug\\DEM_row_737_col_737_rowres_0.0578359_colres_0.0746455.txt");
+	std::ifstream infile(infilename);
+	if (infile.is_open())
+	{
+		
+		// Get raw height data. 
+		for (int i = 0; i < nx; ++i)
+		{
+			for (int j = 0; j < ny; ++j)
+			{
+				float curh;
+				infile >> curh;
+				curh = (curh) * hScale;
+				height(i, j) = curh;
+			}
+		}
+
+		// Compute average height.
+		float heightSum = 0.0f;
+		for (int i = 0; i < nx; ++i)
+		{
+			for (int j = 0; j < ny; ++j)
+			{
+				heightSum += height(i, j);
+			}
+		}
+		float heightAvg = heightSum / (float)(nx*ny);
+		for (int i = 0; i < nx; ++i)
+		{
+			for (int j = 0; j < ny; ++j)
+			{
+				height(i, j) -= heightAvg;
+			}
+		}
+	}
+	else
+	{
+		std::cout << "Open file:  " << infilename.c_str() << "  Failed." << std::endl;
+	}
+
+
+
+	DeviceHeightField1d& terrain = m_groundRigidInteractor->getHeightField();
+	DeviceHeightField1d* terrain_ = &terrain;
+	Function1Pt::copy(*terrain_, height);
+	m_groundRigidInteractor->setDetectionMethod(HeightFieldPBDInteractionNode::HFDETECTION::POINTVISE);
+	//m_groundRigidInteractor->setDetectionMethod(HeightFieldTerrainRigidInteractionNode::HFDETECTION::FACEVISE);
+
+	terrain.setOrigin(0, 0, 0);
+
+
+	// Land mesh and render module.
+	{
+		auto landrigid = std::make_shared<RigidBody2<DataType3f>>("Land");
+		root->addChild(landrigid);
+
+		// Mesh triangles.
+		auto triset = std::make_shared< TriangleSet<DataType3f>>();
+		landrigid->setTopologyModule(triset);
+
+		// Generate mesh.
+		auto& hfland = terrain;
+		HeightFieldMesh hfmesh;
+		hfmesh.generate(triset, hfland);
+
+		// Mesh renderer.
+		auto renderModule = std::make_shared<RigidMeshRender>(landrigid->getTransformationFrame());
+		renderModule->setColor(Vector3f(210.0 / 255.0, 180.0 / 255.0, 140.0 / 255.0));
+		landrigid->addVisualModule(renderModule);
+	}
+
+
+
+	m_car = std::make_shared<PBDCar>();
+	this->addCar(m_car, Vector3f(0, /*-0.15*/59, 0),
+		1, 4 | 8, 2, 4 | 8);
+
+	// Collision primitive of car chass.
+	{
+		auto pointset = TypeInfo::cast<PointSet<DataType3f>>(m_car->getChassis()->getTopologyModule());
+		if (pointset)
+		{
+			std::shared_ptr<TOrientedBox3D<float>> pobb = std::make_shared<TOrientedBox3D<float>>();
+			pobb->u = Vector3f(1, 0, 0);
+			pobb->v = Vector3f(0, 1, 0);
+			pobb->w = Vector3f(0, 0, 1);
+
+			//DeviceArray<Vector3f>& vertices = pointset->getPoints();
+			this->computeAABB(pointset, pobb->center, pobb->extent);
+
+			auto pdetector = m_groundRigidInteractor->getRigidContactDetector();
+			pdetector->addCollidableObject(m_car->m_chassis, pobb);
+
+		}
+	}
+	// Collision primitive of car wheels.
+	for (int i = 0; i < 4; ++i)
+	{
+		
+		auto pwheel = m_car->m_wheels[i];
+		auto pointset = TypeInfo::cast<PointSet<DataType3f>>(pwheel->getTopologyModule());
+		if (pointset)
+		{
+			std::shared_ptr<TOrientedBox3D<float>> pobb = std::make_shared<TOrientedBox3D<float>>();
+			pobb->u = Vector3f(1, 0, 0);
+			pobb->v = Vector3f(0, 1, 0);
+			pobb->w = Vector3f(0, 0, 1);
+
+			//DeviceArray<Vector3f>& vertices = pointset->getPoints();
+			this->computeAABB(pointset, pobb->center, pobb->extent);
+
+			auto pdetector = m_groundRigidInteractor->getRigidContactDetector();
+			pdetector->addCollidableObject(pwheel, pobb);
+
+		}
+	}
+
+	// Render module of car chass.
+	{
+		auto renderModule = std::make_shared<RigidMeshRender>(m_car->m_chassis->getTransformationFrame());
+		renderModule->setColor(Vector3f(0.8, std::rand() % 1000 / (double)1000, 0.8));
+		m_car->m_chassis->addVisualModule(renderModule);
+	}
+
+	// Render module of car wheels.
+	for (int i = 0; i < 4; ++i)
+	{
+		auto renderModule = std::make_shared<RigidMeshRender>(m_car->m_wheels[i]->getTransformationFrame());
+		renderModule->setColor(Vector3f(0.8, std::rand() % 1000 / (double)1000, 0.8));
+		m_car->m_wheels[i]->addVisualModule(renderModule);
+	}
+
+	m_groundRigidInteractor->addChild(m_car);
+
+
+
+
+
+
+	//root->addChild(m_car);
+	//GLApp window;
+	this->setKeyboardFunction(DemoCar3::demoKeyboardFunction);
+	this->createWindow(1024, 768);
+	this->mainLoop();
+}
+
+
+void DemoCar3::computeAABB(std::shared_ptr<PointSet<DataType3f>> points, Vector3f & center, Vector3f & halfSize)
+{
+	int nPoints = points->getPointSize();
+	if (nPoints <= 0)
+		return;
+
+	auto& pointArr = points->getPoints();
+	HostArray<Vector3f> hpoints;
+	hpoints.resize(nPoints);
+	PhysIKA::Function1Pt::copy(hpoints, pointArr);
+
+
+	Vector3f pmin = hpoints[0];
+	Vector3f pmax = hpoints[0];
+	for (int i = 1; i < nPoints; ++i)
+	{
+		Vector3f curp = hpoints[i];
+		pmin[0] = min(pmin[0], curp[0]);
+		pmin[1] = min(pmin[1], curp[1]);
+		pmin[2] = min(pmin[2], curp[2]);
+		pmax[0] = max(pmax[0], curp[0]);
+		pmax[1] = max(pmax[1], curp[1]);
+		pmax[2] = max(pmax[2], curp[2]);
+	}
+
+	center = (pmin + pmax)*0.5;
+	halfSize = (pmax - pmin)*0.5;
+}
+
+void DemoCar3::addCar(std::shared_ptr<PBDCar> car, Vector3f pos,
+	int chassisGroup, int chassisMask, int wheelGroup, int wheelMask)
+{
+	car->m_rigidSolver = m_groundRigidInteractor->getSolver();
+	//m_car->m_rigidSolver->setUseGPU(useGPU);
+
+
+	car->carPosition = pos;// Vector3f(0.1, 0.4, 0.1);
+	car->carRotation = Quaternion<float>(0, 0, 0., 1).normalize();
+
+
+	car->wheelRelPosition[0] = Vector3f(-0.9, 0.35, -2.0f);
+	car->wheelRelPosition[1] = Vector3f( 0.9, 0.35, -2.0f);
+	car->wheelRelPosition[2] = Vector3f(-0.9, 0.35,  1.2f);
+	car->wheelRelPosition[3] = Vector3f( 0.9, 0.35,  1.2f);
+	car->wheelRelRotation[0] = Quaternion<float>(0, 0, 0, 1);// (0, 0.5, 0, 0.5).normalize();
+	car->wheelRelRotation[1] = Quaternion<float>(0, 0, 0, 1);//(0, 0.5, 0, 0.5).normalize();
+	car->wheelRelRotation[2] = Quaternion<float>(0, 0, 0, 1);//(0, 0.5, 0, 0.5).normalize();
+	car->wheelRelRotation[3] = Quaternion<float>(0, 0, 0, 1);//(0, 0.5, 0, 0.5).normalize();
+
+	car->wheelupDirection = Vector3f(0, 1, 0);
+	car->wheelRightDirection = Vector3f(1, 0, 0);
+
+	car->chassisFile = "D:\\Documents\\XiaoDoc\\Journal\\y2021m06\\test_for_viwo_bug\\BadCar\\body.obj";
+	car->wheelFile[0] = "D:\\Documents\\XiaoDoc\\Journal\\y2021m06\\test_for_viwo_bug\\BadCar\\wheel_l.obj";
+	car->wheelFile[1] = "D:\\Documents\\XiaoDoc\\Journal\\y2021m06\\test_for_viwo_bug\\BadCar\\wheel_r.obj";
+	car->wheelFile[2] = "D:\\Documents\\XiaoDoc\\Journal\\y2021m06\\test_for_viwo_bug\\BadCar\\wheel_l.obj";
+	car->wheelFile[3] = "D:\\Documents\\XiaoDoc\\Journal\\y2021m06\\test_for_viwo_bug\\BadCar\\wheel_r.obj";
+
+	car->chassisMeshScale = Vector3f(1.0f, 1.0f, 1.0f);
+	car->wheelMeshScale[0] = Vector3f(1.0f, 1.0f, 1.0f);
+	car->wheelMeshScale[1] = Vector3f(1.0f, 1.0f, 1.0f);
+	car->wheelMeshScale[2] = Vector3f(1.0f, 1.0f, 1.0f);
+	car->wheelMeshScale[3] = Vector3f(1.0f, 1.0f, 1.0f);
+
+
+	// ?????????????????????????????????????????????????????
+	car->wheelRadius[0] = 0.15;
+	car->wheelRadius[1] = 0.15;
+	car->wheelRadius[2] = 0.15;
+	car->wheelRadius[3] = 0.15;
+
+	car->chassisMeshTranslate = Vector3f(0, 0, 0);
+	car->wheelMeshTranslate[0] = Vector3f(0, 0, 0);// 0.075);
+	car->wheelMeshTranslate[1] = Vector3f(0, 0, 0);// 0.075);
+	car->wheelMeshTranslate[2] = Vector3f(0, 0, 0);// 0.075);
+	car->wheelMeshTranslate[3] = Vector3f(0, 0, 0);// 0.075);
+
+
+	car->chassisMass = 5000;// 00;
+	car->chassisInertia = RigidUtil::calculateCubeLocalInertia(car->chassisMass, car->chassisMeshScale);
+
+	float wheelm = 50;
+
+	// ????????????????????????????????????????????
+	// Radius?  and  height?
+	Vector3f wheelI = RigidUtil::calculateCylinderLocalInertia(wheelm, 0.1f, 0.03f, 0);
+	car->wheelMass[0] = wheelm;
+	car->wheelInertia[0] = wheelI;
+	car->wheelMass[1] = wheelm;
+	car->wheelInertia[1] = wheelI;
+	car->wheelMass[2] = wheelm;
+	car->wheelInertia[2] = wheelI;
+	car->wheelMass[3] = wheelm;
+	car->wheelInertia[3] = wheelI;
+
+	car->steeringLowerBound = -0.5;
+	car->steeringUpperBound = 0.5;
+
+	car->forwardForceAcc = 10000;
+	//car->breakForceAcc ;
+	car->steeringSpeed = 1.0;
+	car->maxVel = 2.5;
+
+	car->chassisCollisionGroup = chassisGroup;
+	car->chassisCollisionMask = chassisMask;
+	car->wheelCollisionGroup = wheelGroup;
+	car->wheelCollisionMask = wheelMask;
+
+	car->linearDamping = 0.2;
+	car->angularDamping = 0.2;
+
+	car->suspensionLength = 0.05;
+	car->suspensionStrength = 1000000;
+
+	car->build();
+	car->setDt(0.016);
+}
+
+
+void DemoCar3::demoKeyboardFunction(unsigned char key, int x, int y)
+{
+	if (key != 's' && key != 'a' && key != 'd' && key != 'w')
+	{
+		GLApp::keyboardFunction(key, x, y);
+	}
+	else
+	{
+		if (!m_instance)
+			return;
+		switch (key)
+		{
+		case 'a':
+			m_instance->m_car->goLeft(0.016);
+			break;
+		case 'd':
+			m_instance->m_car->goRight(0.016);
+			break;
+		case 'w':
+			m_instance->m_car->forward(0.016);
+			break;
+		case 's':
+			m_instance->m_car->backward(0.016);
+			break;
+		}
+	}
+}
+
+
+// =====================================================================
+// DemoCar 4
+
+DemoCar4* DemoCar4::m_instance = 0;
+
+void DemoCar4::advance(Real dt)
+{
+
+
+}
+
+//
+//
+//void DemoCar4::build(bool useGPU)
+//{
+//	SceneGraph& scene = SceneGraph::getInstance();
+//	std::shared_ptr<StaticBoundary<DataType3f>> root = scene.createNewScene<StaticBoundary<DataType3f>>();
+//	root->loadSDF("../../Media/bar/bar.sdf", false);
+//	root->translate(Vector3f(0.2f, 0.2f, 0));
+//
+//	//int ny = 509, nx = 266;
+//	int ny = 1057, nx = 1057;
+//
+//	float hScale = 0.2;
+//
+//	float dl = 0.22 * hScale;
+//	float hOffset = -25;
+//
+//	m_groundRigidInteractor = std::make_shared<HeightFieldPBDInteractionNode>();
+//	//m_groundRigidInteractor->setRigidBodySystem(m_car->m_rigidSystem);
+//	//m_groundRigidInteractor->setSize(nx, ny, dl, dl);
+//	m_groundRigidInteractor->getSolver()->m_numSubstep = 5;
+//	m_groundRigidInteractor->getSolver()->m_numContactSolveIter = 20;
+//
+//	m_groundRigidInteractor->getSolver()->setUseGPU(useGPU);
+//
+//	root->addChild(m_groundRigidInteractor);
+//	m_groundRigidInteractor->setDt(0.016);
+//
+//	//m_groundRigidInteractor->setTerrainInfo(terraininfo);
+//
+//	HostHeightField1d height;
+//	height.resize(nx, ny);
+//	memset(height.GetDataPtr(), 0, sizeof(double) * nx * ny);
+//
+//	//HeightFieldLoader hfloader;
+//	//hfloader.setRange(0, 0.5);
+//	//hfloader.load(height, "../../Media/HeightFieldImg/terrain3.png");
+//
+//	std::string infilename("../../Media/HeightFieldImg/dem_w1057_h1057.txt");
+//	std::ifstream infile(infilename);
+//	if (infile.is_open())
+//	{
+//		for (int i = 0; i < nx; ++i)
+//		{
+//			for (int j = 0; j < ny; ++j)
+//			{
+//				float curh;
+//				infile >> curh;
+//				curh = (curh + hOffset) * hScale;
+//				height(i, j) = curh;
+//			}
+//		}
+//	}
+//	else
+//	{
+//		std::cout << "Open file:  " << infilename.c_str() << "  Failed." << std::endl;
+//	}
+//
+//
+//
+//	DeviceHeightField1d terrain;// = m_groundRigidInteractor->getHeightField();
+//	terrain.resize(nx, ny);
+//	terrain.setSpace(dl, dl);
+//	DeviceHeightField1d* terrain_ = &terrain;
+//	Function1Pt::copy(*terrain_, height);
+//	//m_groundRigidInteractor->setDetectionMethod(HeightFieldPBDInteractionNode::HFDETECTION::POINTVISE);
+//	//m_groundRigidInteractor->setDetectionMethod(HeightFieldTerrainRigidInteractionNode::HFDETECTION::FACEVISE);
+//
+//	terrain.setOrigin(0, 0, 0);
+//
+//	{
+//		auto landrigid = std::make_shared<RigidBody2<DataType3f>>("Land");
+//		root->addChild(landrigid);
+//
+//		// Mesh triangles.
+//		auto triset = std::make_shared< TriangleSet<DataType3f>>();
+//		landrigid->setTopologyModule(triset);
+//
+//		// Generate mesh.
+//		auto& hfland = terrain;
+//		HeightFieldMesh hfmesh;
+//		hfmesh.generate(triset, hfland);
+//
+//		// Mesh renderer.
+//		auto renderModule = std::make_shared<RigidMeshRender>(landrigid->getTransformationFrame());
+//		renderModule->setColor(Vector3f(210.0 / 255.0, 180.0 / 255.0, 140.0 / 255.0));
+//		landrigid->addVisualModule(renderModule);
+//	}
+//
+//
+//	// Height field & rigid detection.
+//	auto multiDetectModule = m_groundRigidInteractor->addCustomModule<MultiHeightFieldRigidDetectionModule>("Multi-hf-rigid Detectoin");;
+//	multiDetectModule->rigidContactDetector = std::make_shared<OrientedBodyDetector>();
+//	//multiDetectModule->bindDetectionMethod(m_groundRigidInteractor->getSolver().get());
+//	m_groundRigidInteractor->getHeightField().set(terrain.GetDataPtr(), terrain.Pitch(), ny, nx, dl, dl, 0, 0, 0);
+//
+//	auto hfrigidDetectModule0 = std::make_shared<HeightFieldRigidDetectionModule>();
+//	multiDetectModule->heightfieldRigidDetectors.push_back(hfrigidDetectModule0);
+//	hfrigidDetectModule0->getHeightField().set(terrain.GetDataPtr(), terrain.Pitch(), ny, nx, dl, dl, 0, 0, 0);
+//
+//
+//	
+//
+//	m_car = std::make_shared<PBDCar>();
+//	this->addCar(m_car, Vector3f(0.1, /*-0.15*/0.90, 0.1),
+//		1, 4 | 8, 2, 4 | 8);
+//
+//
+//	{
+//		hfrigidDetectModule0->rigids.push_back(m_car->m_chassis);
+//		hfrigidDetectModule0->rigids.push_back(m_car->m_wheels[0]);
+//		hfrigidDetectModule0->rigids.push_back(m_car->m_wheels[1]);
+//		hfrigidDetectModule0->rigids.push_back(m_car->m_wheels[2]);
+//		hfrigidDetectModule0->rigids.push_back(m_car->m_wheels[3]);
+//
+//	}
+//
+//	{
+//		auto pointset = TypeInfo::cast<PointSet<DataType3f>>(m_car->getChassis()->getTopologyModule());
+//		if (pointset)
+//		{
+//			//Vector3f chaCenter;
+//			//Vector3f chaSize;
+//
+//			std::shared_ptr<TOrientedBox3D<float>> pobb = std::make_shared<TOrientedBox3D<float>>();
+//			//pobb->center = chaCenter;
+//			//pobb->extent = chaSize;
+//			pobb->u = Vector3f(1, 0, 0);
+//			pobb->v = Vector3f(0, 1, 0);
+//			pobb->w = Vector3f(0, 0, 1);
+//
+//			//DeviceArray<Vector3f>& vertices = pointset->getPoints();
+//			this->computeAABB(pointset, pobb->center, pobb->extent);
+//
+//			auto pdetector = multiDetectModule->rigidContactDetector;
+//			pdetector->addCollidableObject(m_car->m_chassis, pobb);
+//
+//		}
+//	}
+//	for (int i = 0; i < 4; ++i)
+//	{
+//		auto pwheel = m_car->m_wheels[i];
+//		auto pointset = TypeInfo::cast<PointSet<DataType3f>>(pwheel->getTopologyModule());
+//		if (pointset)
+//		{
+//			//Vector3f chaCenter;
+//			//Vector3f chaSize;
+//
+//			std::shared_ptr<TOrientedBox3D<float>> pobb = std::make_shared<TOrientedBox3D<float>>();
+//			//pobb->center = chaCenter;
+//			//pobb->extent = chaSize;
+//			pobb->u = Vector3f(1, 0, 0);
+//			pobb->v = Vector3f(0, 1, 0);
+//			pobb->w = Vector3f(0, 0, 1);
+//
+//			//DeviceArray<Vector3f>& vertices = pointset->getPoints();
+//			this->computeAABB(pointset, pobb->center, pobb->extent);
+//
+//			auto pdetector = multiDetectModule->rigidContactDetector;
+//			pdetector->addCollidableObject(pwheel, pobb);
+//
+//		}
+//	}
+//
+//	auto renderModule = std::make_shared<RigidMeshRender>(m_car->m_chassis->getTransformationFrame());
+//	renderModule->setColor(Vector3f(0.8, std::rand() % 1000 / (double)1000, 0.8));
+//	m_car->m_chassis->addVisualModule(renderModule);
+//	for (int i = 0; i < 4; ++i)
+//	{
+//		auto renderModule = std::make_shared<RigidMeshRender>(m_car->m_wheels[i]->getTransformationFrame());
+//		renderModule->setColor(Vector3f(0.8, std::rand() % 1000 / (double)1000, 0.8));
+//		m_car->m_wheels[i]->addVisualModule(renderModule);
+//	}
+//
+//	m_groundRigidInteractor->addChild(m_car);
+//
+//
+//
+//	m_car2 = std::make_shared<PBDCar>();
+//	this->addCar(m_car2, Vector3f(0.1, 0.9, -0.7),
+//		4, 1 | 2, 8, 1 | 2
+//	);
+//
+//	{
+//		auto pointset = TypeInfo::cast<PointSet<DataType3f>>(m_car2->getChassis()->getTopologyModule());
+//		if (pointset)
+//		{
+//			//Vector3f chaCenter;
+//			//Vector3f chaSize;
+//
+//			std::shared_ptr<TOrientedBox3D<float>> pobb = std::make_shared<TOrientedBox3D<float>>();
+//			//pobb->center = chaCenter;
+//			//pobb->extent = chaSize;
+//			pobb->u = Vector3f(1, 0, 0);
+//			pobb->v = Vector3f(0, 1, 0);
+//			pobb->w = Vector3f(0, 0, 1);
+//
+//			//DeviceArray<Vector3f>& vertices = pointset->getPoints();
+//			this->computeAABB(pointset, pobb->center, pobb->extent);
+//
+//			auto pdetector = multiDetectModule->rigidContactDetector;
+//			pdetector->addCollidableObject(m_car2->m_chassis, pobb);
+//
+//		}
+//	}
+//	for (int i = 0; i < 4; ++i)
+//	{
+//		auto pwheel = m_car2->m_wheels[i];
+//
+//		auto pointset = TypeInfo::cast<PointSet<DataType3f>>(pwheel->getTopologyModule());
+//		if (pointset)
+//		{
+//			//Vector3f chaCenter;
+//			//Vector3f chaSize;
+//
+//			std::shared_ptr<TOrientedBox3D<float>> pobb = std::make_shared<TOrientedBox3D<float>>();
+//			//pobb->center = chaCenter;
+//			//pobb->extent = chaSize;
+//			pobb->u = Vector3f(1, 0, 0);
+//			pobb->v = Vector3f(0, 1, 0);
+//			pobb->w = Vector3f(0, 0, 1);
+//
+//			//DeviceArray<Vector3f>& vertices = pointset->getPoints();
+//			this->computeAABB(pointset, pobb->center, pobb->extent);
+//
+//			auto pdetector = multiDetectModule->rigidContactDetector;
+//			pdetector->addCollidableObject(pwheel, pobb);
+//
+//		}
+//	}
+//
+//
+//	renderModule = std::make_shared<RigidMeshRender>(m_car2->m_chassis->getTransformationFrame());
+//	renderModule->setColor(Vector3f(0.8, std::rand() % 1000 / (double)1000, 0.8));
+//	m_car2->m_chassis->addVisualModule(renderModule);
+//	for (int i = 0; i < 4; ++i)
+//	{
+//		auto renderModule = std::make_shared<RigidMeshRender>(m_car2->m_wheels[i]->getTransformationFrame());
+//		renderModule->setColor(Vector3f(0.8, std::rand() % 1000 / (double)1000, 0.8));
+//		m_car2->m_wheels[i]->addVisualModule(renderModule);
+//	}
+//	m_groundRigidInteractor->addChild(m_car2);
+//
+//
+//
+//	// Inertaction 
+//
+//	//TerrainRigidInteractionInfo terraininfo;
+//	//terraininfo.elasticModulus = 1e6;
+//	//terraininfo.surfaceThickness = 0.05;
+//	//terraininfo.damping = 5e5;
+//
+//
+//
+//
+//
+//
+//	//root->addChild(m_car);
+//	//GLApp window;
+//	this->setKeyboardFunction(DemoCar2::demoKeyboardFunction);
+//	this->createWindow(1024, 768);
+//	this->mainLoop();
+//}
+
+
+
+void DemoCar4::build(bool useGPU)
+{
+	SceneGraph& scene = SceneGraph::getInstance();
+	std::shared_ptr<StaticBoundary<DataType3f>> root = scene.createNewScene<StaticBoundary<DataType3f>>();
+	root->loadSDF("../../Media/bar/bar.sdf", false);
+	root->translate(Vector3f(0.2f, 0.2f, 0));
+
+	//int ny = 509, nx = 266;
+	int ny = 1057, nx = 1057;
+
+	float hScale = 0.2;
+
+	float dl = 0.22 * hScale;
+	float hOffset = -25;
+
+
+
+	//m_groundRigidInteractor->setTerrainInfo(terraininfo);
+
+
+	//=============== Terrain =========
+	HostHeightField1d height;
+	height.resize(nx, ny);
+	memset(height.GetDataPtr(), 0, sizeof(double) * nx * ny);
+
+	std::string infilename("../../Media/HeightFieldImg/dem_w1057_h1057.txt");
+	std::ifstream infile(infilename);
+	if (infile.is_open())
+	{
+		for (int i = 0; i < nx; ++i)
+		{
+			for (int j = 0; j < ny; ++j)
+			{
+				float curh;
+				infile >> curh;
+				curh = (curh + hOffset) * hScale;
+				height(i, j) = curh;
+			}
+		}
+	}
+	else
+	{
+		std::cout << "Open file:  " << infilename.c_str() << "  Failed." << std::endl;
+	}
+
+	DeviceHeightField1d terrain;
+	terrain.resize(nx, ny);
+	terrain.setSpace(dl, dl);
+	DeviceHeightField1d* terrain_ = &terrain;
+	Function1Pt::copy(*terrain_, height);
+
+	Vector3f terrainOrigin(0, 0, 0);
+	terrain.setOrigin(terrainOrigin[0], terrainOrigin[1], terrainOrigin[2]);
+
+	{
+		auto landrigid = std::make_shared<RigidBody2<DataType3f>>("Land");
+		root->addChild(landrigid);
+
+		// Mesh triangles.
+		auto triset = std::make_shared< TriangleSet<DataType3f>>();
+		landrigid->setTopologyModule(triset);
+
+		// Generate mesh.
+		auto& hfland = terrain;
+		HeightFieldMesh hfmesh;
+		hfmesh.generate(triset, hfland);
+
+		// Mesh renderer.
+		auto renderModule = std::make_shared<RigidMeshRender>(landrigid->getTransformationFrame());
+		renderModule->setColor(Vector3f(210.0 / 255.0, 180.0 / 255.0, 140.0 / 255.0));
+		landrigid->addVisualModule(renderModule);
+	}
+
+
+	// =====   Solver node  =========
+	m_groundRigidInteractor = std::make_shared<PBDSolverNode>();
+	//m_groundRigidInteractor->setSize(nx, ny, dl, dl);
+	m_groundRigidInteractor->getSolver()->m_numSubstep = 5;
+	m_groundRigidInteractor->getSolver()->m_numContactSolveIter = 20;
+
+	m_groundRigidInteractor->getSolver()->setUseGPU(useGPU);
+
+	root->addChild(m_groundRigidInteractor);
+	m_groundRigidInteractor->setDt(0.016);
+
+
+	// Height field & rigid detection.
+	auto multiDetectModule = m_groundRigidInteractor->addCustomModule<MultiHeightFieldRigidDetectionModule>("Multi-hf-rigid Detectoin");;
+	multiDetectModule->rigidContactDetector = std::make_shared<OrientedBodyDetector>();
+	multiDetectModule->bindDetectionMethod(m_groundRigidInteractor->getSolver().get());
+	//
+
+	auto hfrigidDetectModule0 = std::make_shared<HeightFieldRigidDetectionModule>();
+	multiDetectModule->heightfieldRigidDetectors.push_back(hfrigidDetectModule0);
+	hfrigidDetectModule0->getHeightField().set(terrain.GetDataPtr(), terrain.Pitch(), ny, nx, dl, dl, terrainOrigin[0], terrainOrigin[1], terrainOrigin[2]);
+
+	//auto hfrigidDetectModule0 = m_groundRigidInteractor->addCustomModule<HeightFieldRigidDetectionModule>("hf-rigid Detection");
+	//hfrigidDetectModule0->bindDetectionMethod(m_groundRigidInteractor->getSolver().get());
+	//hfrigidDetectModule0->getHeightField().set(terrain.GetDataPtr(), terrain.Pitch(), ny, nx, dl, dl, terrainOrigin[0], terrainOrigin[1], terrainOrigin[2]);
+	//m_groundRigidInteractor->getHeightField().set(terrain.GetDataPtr(), terrain.Pitch(), ny, nx, dl, dl, 0, 0, 0);
+
+	auto hfrigidDetectModule1 = std::make_shared<HeightFieldRigidDetectionModule>();
+	multiDetectModule->heightfieldRigidDetectors.push_back(hfrigidDetectModule1);
+	hfrigidDetectModule1->getHeightField().set(terrain.GetDataPtr(), terrain.Pitch(), nx, ny, dl, dl, terrainOrigin[0], terrainOrigin[1], terrainOrigin[2]);
+
+
+
+
+
+	m_car = std::make_shared<PBDCar>();
+	this->addCar(m_car, Vector3f(0.1, /*-0.15*/0.90, 0.1),
+		1, 4 | 8, 2, 4 | 8);
+	{
+		hfrigidDetectModule0->rigids.push_back(m_car->m_chassis);
+		hfrigidDetectModule0->rigids.push_back(m_car->m_wheels[0]);
+		hfrigidDetectModule0->rigids.push_back(m_car->m_wheels[1]);
+		hfrigidDetectModule0->rigids.push_back(m_car->m_wheels[2]);
+		hfrigidDetectModule0->rigids.push_back(m_car->m_wheels[3]);
+	}
+
+	{
+		auto pointset = TypeInfo::cast<PointSet<DataType3f>>(m_car->getChassis()->getTopologyModule());
+		if (pointset)
+		{
+			//Vector3f chaCenter;
+			//Vector3f chaSize;
+
+			std::shared_ptr<TOrientedBox3D<float>> pobb = std::make_shared<TOrientedBox3D<float>>();
+			//pobb->center = chaCenter;
+			//pobb->extent = chaSize;
+			pobb->u = Vector3f(1, 0, 0);
+			pobb->v = Vector3f(0, 1, 0);
+			pobb->w = Vector3f(0, 0, 1);
+
+			//DeviceArray<Vector3f>& vertices = pointset->getPoints();
+			this->computeAABB(pointset, pobb->center, pobb->extent);
+
+			auto pdetector = multiDetectModule->rigidContactDetector;
+			pdetector->addCollidableObject(m_car->m_chassis, pobb);
+
+		}
+	}
+	for (int i = 0; i < 4; ++i)
+	{
+		auto pwheel = m_car->m_wheels[i];
+		auto pointset = TypeInfo::cast<PointSet<DataType3f>>(pwheel->getTopologyModule());
+		if (pointset)
+		{
+			//Vector3f chaCenter;
+			//Vector3f chaSize;
+
+			std::shared_ptr<TOrientedBox3D<float>> pobb = std::make_shared<TOrientedBox3D<float>>();
+			//pobb->center = chaCenter;
+			//pobb->extent = chaSize;
+			pobb->u = Vector3f(1, 0, 0);
+			pobb->v = Vector3f(0, 1, 0);
+			pobb->w = Vector3f(0, 0, 1);
+
+			//DeviceArray<Vector3f>& vertices = pointset->getPoints();
+			this->computeAABB(pointset, pobb->center, pobb->extent);
+
+			auto pdetector = multiDetectModule->rigidContactDetector;
+			pdetector->addCollidableObject(pwheel, pobb);
+
+		}
+	}
+
+	auto renderModule = std::make_shared<RigidMeshRender>(m_car->m_chassis->getTransformationFrame());
+	renderModule->setColor(Vector3f(0.8, std::rand() % 1000 / (double)1000, 0.8));
+	m_car->m_chassis->addVisualModule(renderModule);
+	for (int i = 0; i < 4; ++i)
+	{
+		auto renderModule = std::make_shared<RigidMeshRender>(m_car->m_wheels[i]->getTransformationFrame());
+		renderModule->setColor(Vector3f(0.8, std::rand() % 1000 / (double)1000, 0.8));
+		m_car->m_wheels[i]->addVisualModule(renderModule);
+	}
+
+	m_groundRigidInteractor->addChild(m_car);
+
+
+
+	m_car2 = std::make_shared<PBDCar>();
+	this->addCar(m_car2, Vector3f(0.1, 0.9, -0.7),
+		4, 1 | 2, 8, 1 | 2
+	);
+	{
+		hfrigidDetectModule1->rigids.push_back(m_car2->m_chassis);
+		hfrigidDetectModule1->rigids.push_back(m_car2->m_wheels[0]);
+		hfrigidDetectModule1->rigids.push_back(m_car2->m_wheels[1]);
+		hfrigidDetectModule1->rigids.push_back(m_car2->m_wheels[2]);
+		hfrigidDetectModule1->rigids.push_back(m_car2->m_wheels[3]);
+	}
+
+	{
+		auto pointset = TypeInfo::cast<PointSet<DataType3f>>(m_car2->getChassis()->getTopologyModule());
+		if (pointset)
+		{
+			//Vector3f chaCenter;
+			//Vector3f chaSize;
+
+			std::shared_ptr<TOrientedBox3D<float>> pobb = std::make_shared<TOrientedBox3D<float>>();
+			//pobb->center = chaCenter;
+			//pobb->extent = chaSize;
+			pobb->u = Vector3f(1, 0, 0);
+			pobb->v = Vector3f(0, 1, 0);
+			pobb->w = Vector3f(0, 0, 1);
+
+			//DeviceArray<Vector3f>& vertices = pointset->getPoints();
+			this->computeAABB(pointset, pobb->center, pobb->extent);
+
+			auto pdetector = multiDetectModule->rigidContactDetector;
+			pdetector->addCollidableObject(m_car2->m_chassis, pobb);
+
+		}
+	}
+	for (int i = 0; i < 4; ++i)
+	{
+		auto pwheel = m_car2->m_wheels[i];
+
+		auto pointset = TypeInfo::cast<PointSet<DataType3f>>(pwheel->getTopologyModule());
+		if (pointset)
+		{
+			//Vector3f chaCenter;
+			//Vector3f chaSize;
+
+			std::shared_ptr<TOrientedBox3D<float>> pobb = std::make_shared<TOrientedBox3D<float>>();
+			//pobb->center = chaCenter;
+			//pobb->extent = chaSize;
+			pobb->u = Vector3f(1, 0, 0);
+			pobb->v = Vector3f(0, 1, 0);
+			pobb->w = Vector3f(0, 0, 1);
+
+			//DeviceArray<Vector3f>& vertices = pointset->getPoints();
+			this->computeAABB(pointset, pobb->center, pobb->extent);
+
+			auto pdetector = multiDetectModule->rigidContactDetector;
+			pdetector->addCollidableObject(pwheel, pobb);
+
+		}
+	}
+
+
+	renderModule = std::make_shared<RigidMeshRender>(m_car2->m_chassis->getTransformationFrame());
+	renderModule->setColor(Vector3f(0.8, std::rand() % 1000 / (double)1000, 0.8));
+	m_car2->m_chassis->addVisualModule(renderModule);
+	for (int i = 0; i < 4; ++i)
+	{
+		auto renderModule = std::make_shared<RigidMeshRender>(m_car2->m_wheels[i]->getTransformationFrame());
+		renderModule->setColor(Vector3f(0.8, std::rand() % 1000 / (double)1000, 0.8));
+		m_car2->m_wheels[i]->addVisualModule(renderModule);
+	}
+	m_groundRigidInteractor->addChild(m_car2);
+
+
+
+
+
+
+
+
+	//root->addChild(m_car);
+	//GLApp window;
+	this->setKeyboardFunction(DemoCar4::demoKeyboardFunction);
+	this->createWindow(1024, 768);
+	this->mainLoop();
+}
+
+
+void DemoCar4::computeAABB(std::shared_ptr<PointSet<DataType3f>> points, Vector3f & center, Vector3f & halfSize)
+{
+	int nPoints = points->getPointSize();
+	if (nPoints <= 0)
+		return;
+
+	auto& pointArr = points->getPoints();
+	HostArray<Vector3f> hpoints;
+	hpoints.resize(nPoints);
+	PhysIKA::Function1Pt::copy(hpoints, pointArr);
+
+
+	Vector3f pmin = hpoints[0];
+	Vector3f pmax = hpoints[0];
+	for (int i = 1; i < nPoints; ++i)
+	{
+		Vector3f curp = hpoints[i];
+		pmin[0] = min(pmin[0], curp[0]);
+		pmin[1] = min(pmin[1], curp[1]);
+		pmin[2] = min(pmin[2], curp[2]);
+		pmax[0] = max(pmax[0], curp[0]);
+		pmax[1] = max(pmax[1], curp[1]);
+		pmax[2] = max(pmax[2], curp[2]);
+	}
+
+	center = (pmin + pmax)*0.5;
+	halfSize = (pmax - pmin)*0.5;
+}
+
+void DemoCar4::addCar(std::shared_ptr<PBDCar> car, Vector3f pos,
+	int chassisGroup, int chassisMask, int wheelGroup, int wheelMask)
+{
+	car->m_rigidSolver = m_groundRigidInteractor->getSolver();
+	//m_car->m_rigidSolver->setUseGPU(useGPU);
+
+
+	car->carPosition = pos;// Vector3f(0.1, 0.4, 0.1);
+	car->carRotation = Quaternion<float>(0, 0, 0., 1).normalize();
+
+
+	car->wheelRelPosition[0] = Vector3f(-0.15f /*+ 0.02*/, -0.1, -0.2f/* -0.01*/);
+	car->wheelRelPosition[1] = Vector3f(+0.15f/*+0.01*/, -0.1, -0.2f/* +0.02*/);
+	car->wheelRelPosition[2] = Vector3f(-0.15f, -0.1, 0.2f);
+	car->wheelRelPosition[3] = Vector3f(+0.15f, -0.1, 0.2f);
+	car->wheelRelRotation[0] = Quaternion<float>(0, 0, 0, 1);// (0, 0.5, 0, 0.5).normalize();
+	car->wheelRelRotation[1] = Quaternion<float>(0, 0, 0, 1);//(0, 0.5, 0, 0.5).normalize();
+	car->wheelRelRotation[2] = Quaternion<float>(0, 0, 0, 1);//(0, 0.5, 0, 0.5).normalize();
+	car->wheelRelRotation[3] = Quaternion<float>(0, 0, 0, 1);//(0, 0.5, 0, 0.5).normalize();
+
+	car->wheelupDirection = Vector3f(0, 1, 0);
+	car->wheelRightDirection = Vector3f(1, 0, 0);
+
+	car->chassisFile = "../../Media/standard/standard_cube.obj";
+	car->wheelFile[0] = "../../Media/Cylinder/cylinder2.obj";
+	car->wheelFile[1] = "../../Media/Cylinder/cylinder2.obj";
+	car->wheelFile[2] = "../../Media/Cylinder/cylinder2.obj";
+	car->wheelFile[3] = "../../Media/Cylinder/cylinder2.obj";
+
+	car->chassisMeshScale = Vector3f(0.3, 0.2, 0.5) * 0.5;
+	car->wheelMeshScale[0] = Vector3f(0.002, 0.01, 0.01) *0.5;
+	car->wheelMeshScale[1] = Vector3f(0.002, 0.01, 0.01)*0.5;
+	car->wheelMeshScale[2] = Vector3f(0.002, 0.01, 0.01) *0.5;
+	car->wheelMeshScale[3] = Vector3f(0.002, 0.01, 0.01) *0.5;
+
+	car->wheelRadius[0] = 0.15;
+	car->wheelRadius[1] = 0.15;
+	car->wheelRadius[2] = 0.15;
+	car->wheelRadius[3] = 0.15;
+
+	car->chassisMeshTranslate = Vector3f(0, 0, 0);
+	car->wheelMeshTranslate[0] = Vector3f(0, 0, 0);// 0.075);
+	car->wheelMeshTranslate[1] = Vector3f(0, 0, 0);// 0.075);
+	car->wheelMeshTranslate[2] = Vector3f(0, 0, 0);// 0.075);
+	car->wheelMeshTranslate[3] = Vector3f(0, 0, 0);// 0.075);
+
+
+	car->chassisMass = 5000;// 00;
+	car->chassisInertia = RigidUtil::calculateCubeLocalInertia(car->chassisMass, car->chassisMeshScale);
+
+	float wheelm = 50;
+	Vector3f wheelI = RigidUtil::calculateCylinderLocalInertia(wheelm, 0.1f, 0.03f, 0);
+	car->wheelMass[0] = wheelm;
+	car->wheelInertia[0] = wheelI;
+	car->wheelMass[1] = wheelm;
+	car->wheelInertia[1] = wheelI;
+	car->wheelMass[2] = wheelm;
+	car->wheelInertia[2] = wheelI;
+	car->wheelMass[3] = wheelm;
+	car->wheelInertia[3] = wheelI;
+
+	car->steeringLowerBound = -0.5;
+	car->steeringUpperBound = 0.5;
+
+	car->forwardForceAcc = 10000;
+	//car->breakForceAcc ;
+	car->steeringSpeed = 1.0;
+	car->maxVel = 2.5;
+
+	car->chassisCollisionGroup = chassisGroup;
+	car->chassisCollisionMask = chassisMask;
+	car->wheelCollisionGroup = wheelGroup;
+	car->wheelCollisionMask = wheelMask;
+
+	car->linearDamping = 0.2;
+	car->angularDamping = 0.2;
+
+	car->suspensionLength = 0.05;
+	car->suspensionStrength = 1000000;
+
+	car->build();
+	car->setDt(0.016);
+}
+
+
+void DemoCar4::demoKeyboardFunction(unsigned char key, int x, int y)
+{
+	if (key != 's' && key != 'a' && key != 'd' && key != 'w')
+	{
+		GLApp::keyboardFunction(key, x, y);
+	}
+	else
+	{
+		if (!m_instance)
+			return;
+		switch (key)
+		{
+		case 'a':
+			m_instance->m_car->goLeft(0.016);
+			break;
+		case 'd':
+			m_instance->m_car->goRight(0.016);
+			break;
+		case 'w':
+			m_instance->m_car->forward(0.016);
+			break;
+		case 's':
+			m_instance->m_car->backward(0.016);
+			break;
+		}
+	}
+}
+
+
+
+
+
+// ===========================================
+
 
 DemoTankCar* DemoTankCar::m_instance = 0;
 
@@ -828,7 +1869,7 @@ void DemoTankCar::addCar(std::shared_ptr<MultiWheelCar<4>> car, Vector3f pos,
 	car->angularDamping = 0.8;
 
 	car->suspensionLength = 0.05;
-	car->suspensionStrength = 1000000;
+	car->suspensionStrength = 3000000;
 
 	car->build();
 	car->setDt(0.016);
